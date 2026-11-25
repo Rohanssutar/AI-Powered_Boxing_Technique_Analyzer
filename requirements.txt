@@ -1,53 +1,7 @@
-modules = ["python-3.11"]
-
-[nix]
-channel = "stable-25_05"
-packages = ["glibcLocales", "libGL", "libGLU"]
-
-[deployment]
-deploymentTarget = "autoscale"
-run = ["streamlit", "run", "app.py", "--server.port", "5000"]
-
-[workflows]
-runButton = "Project"
-
-[[workflows.workflow]]
-name = "Project"
-mode = "paralle"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Boxing Analysis Server"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "install_dependencies"
-
-[[workflows.workflow]]
-name = "Boxing Analysis Server"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "uv add opencv-python mediapipe plotly pandas && streamlit run app.py --server.port 5000"
-waitForPort = 5000
-
-[workflows.workflow.metadata]
-outputType = "webview"
-
-[[workflows.workflow]]
-name = "install_dependencies"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "uv add opencv-python mediapipe plotly pandas"
-
-[[ports]]
-localPort = 5000
-externalPort = 80
-
-[[ports]]
-localPort = 36179
-externalPort = 3001
+streamlit>=1.50.0
+mediapipe>=0.10.21
+numpy>=1.26.4
+opencv-python>=4.12.0.88
+pandas>=2.3.2
+plotly>=6.3.0
+Pillow>=11.3.0
