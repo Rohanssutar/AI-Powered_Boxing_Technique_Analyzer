@@ -10,6 +10,12 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import time
 from PIL import Image
+import av
+from streamlit_webrtc import (
+    webrtc_streamer,
+    VideoProcessorBase,
+    RTCConfiguration,
+)
 
 # Custom modules
 from pose_estimator import PoseEstimator
@@ -134,11 +140,11 @@ def technique_analysis_interface(frame_rate: int, max_frames: int):
     st.markdown("Analyze your boxing technique against professional reference forms")
 
     # Technique selection
-    techinques = st.session_state.reference_poses.get_all_techniques()
+    techniques = st.session_state.reference_poses.get_all_techniques()
     selected_technique = st.selectbox(
         "Select Boxing Technique",
-        techinques,
-        format_func=lambda x: x.title()
+        techniques,
+        format_func=lambda technique: technique.title()
     )
 
     # Display technique info
@@ -165,18 +171,16 @@ def technique_analysis_interface(frame_rate: int, max_frames: int):
 
 def realtime_camera_interface(frame_rate: int):
     st.header("📹 Real-time Camera Analysis")
-    st.markdown("Usee your camera to get live feedback on your boxing technique")
+    st.markdown("Use your browser camera to get live feedback on your boxing technique.")
 
-    # Technique selection
     techniques = st.session_state.reference_poses.get_all_techniques()
     selected_technique = st.selectbox(
-        "Select Boxing technique to practice",
+        "Select Boxing Technique",
         techniques,
-        format_func=lambda x: x.title(),
+        format_func=lambda technique: technique.title(),
         key="realtime_technique"
     )
 
-    # Display technique info
     if selected_technique:
         technique_info = st.session_state.reference_poses.get_reference_pose(selected_technique)
         st.info(f"**{selected_technique.title()}**: {technique_info['description']}")
@@ -184,28 +188,8 @@ def realtime_camera_interface(frame_rate: int):
         with st.expander("💡 Technique Tips"):
             for tip in technique_info['tips']:
                 st.write(f"• {tip}")
-    
-    col1, col2 = st.columns([1,1])
 
-    with col1:
-        start_camera = st.button("📹 Start Camera", type="primary", use_container_width=True)
-
-    with col2:
-        stop_camera = st.button("⏹️ Stop Camera", use_container_width=True)
-    
-    # Initialize session state for camera
-    if 'camera_active' not in st.session_state:
-        st.session_state.camera_active = False
-    if start_camera:
-        st.session_state.camera_active = True
-    if stop_camera:
-        st.session_state.camera_active = False
-
-    # Camera interface
-    if st.session_state.camera_active:
-        run_realtime_analysis(selected_technique, frame_rate)
-    else:
-        st.info("👆🏻 Click 'Start Camera' to begin real-time pose analysis")
+    run_realtime_analysis(selected_technique, frame_rate)
 
 def analyze_video_comparison(ref_video, user_video, frame_rate: int, max_frames: int):
     # Analyze and compare two videos
@@ -597,138 +581,108 @@ def calculate_frame_differences(ref_pose: Optional[Dict], user_pose: Dict) -> Di
 
     return differences
 
-def run_realtime_analysis(technique: str, frame_rate: int):
-    # Real-time pose analysis using webcam feed.
-    # containers for the interface
-    video_container = st.empty()
-    feedback_container = st.empty()
-    metrics_container = st.empty()
+class BoxingVideoProcessor(VideoProcessorBase):
+    def __init__(self, technique: str):
+        self.technique = technique
+        self.pose_estimator = PoseEstimator()
+        self.boxing_analyzer = BoxingAnalyzer()
+        self.reference_poses = ReferenceBoxingPoses()
+        self.accuracy_history = []
 
-    reference_pose = st.session_state.reference_poses.get_reference_pose(technique)
-    if not reference_pose:
-        st.error(f"Reference pose for {technique} not found")
-        return
-    
-    # Initialize webcam
-    try:
-        cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        cap.set(cv2.CAP_PROP_FPS, frame_rate)
+    def recv(self, frame):
+        bgr_frame = frame.to_ndarray(format="bgr24")
+        bgr_frame = cv2.flip(bgr_frame, 1)
 
-        if not cap.isOpened():
-            st.error("Could not access camera. Please check your camera permissions.")
-            return
-        
-        # Real-time analysis loop
-        frame_count = 0
-        accuracy_history = []
+        reference_pose = self.reference_poses.get_reference_pose(self.technique)
+        pose_data = self.pose_estimator.estimate_pose(bgr_frame)
 
-        while st.session_state.camera_active:
-            ret, frame = cap.read()
-            if not ret:
-                st.error("Failed to read from camera")
-                break
+        if pose_data and reference_pose:
+            user_angles = pose_data.get("angles", {})
+            reference_angles = reference_pose["angles"]
 
-            frame = cv2.flip(frame, 1)
+            joint_accuracies = self.boxing_analyzer._calculate_joint_accuracies(
+                user_angles,
+                reference_angles,
+            )
+            overall_accuracy = self.boxing_analyzer._calculate_overall_accuracy(
+                joint_accuracies,
+                self.boxing_analyzer.angle_weights,
+            )
 
-            # Estimate pose
-            pose_data = st.session_state.pose_estimator.estimate_pose(frame)
-            if pose_data:
-                user_angles = pose_data.get('angles', {})
-                ref_angles = reference_pose['angles']
+            self.accuracy_history.append(overall_accuracy)
+            if len(self.accuracy_history) > 30:
+                self.accuracy_history.pop(0)
 
-                # Calculate joint accuracies
-                joint_accuracies = st.session_state.boxing_analyzer._calculate_joint_accuracies(
-                    user_angles, ref_angles
-                )
+            average_accuracy = float(np.mean(self.accuracy_history))
 
-                # Overall accuracy
-                overall_accuracy = st.session_state.boxing_analyzer._calculate_overall_accuracy(
-                    joint_accuracies, st.session_state.boxing_analyzer.angle_weights
-                )
-
-                accuracy_history.append(overall_accuracy)
-                if len(accuracy_history) > 30:
-                    accuracy_history.pop(0)
-
-                # Draw pose with feedback colors
-                feedback_color = (0, 255, 0) if overall_accuracy >= 70 else (0, 165, 255) if overall_accuracy >= 50 else (0, 0, 255)
-
-                # Draw pose landmarks
-                annotated_frame = st.session_state.pose_estimator.draw_pose(frame, pose_data)
-
-                # Real-time feedback text
-                cv2.putText(annotated_frame, f"Accuracy: {overall_accuracy:.1f}%",
-                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, feedback_color, 2)
-                
-                # Technique name
-                cv2.putText(annotated_frame, f"Technique: {technique.title()}",
-                            (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                
-                # Generate real-time feedback
-                feedback_message = generate_realtime_feedback(joint_accuracies, reference_pose)
-                cv2.putText(annotated_frame, feedback_message[:50], 
-                            (10, annotated_frame.shape[0] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, feedback_color, 1)
+            if overall_accuracy >= 70:
+                feedback_color = (0, 255, 0)
+                status = "Excellent"
+            elif overall_accuracy >= 50:
+                feedback_color = (0, 165, 255)
+                status = "Good"
             else:
-                annotated_frame = frame.copy()
-                cv2.putText(annotated_frame, "No pose detected - move into camera view",
-                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                overall_accuracy = 0
-                joint_accuracies = {}
-            
-            # Update video display
-            with video_container.container():
-                st.image(
-                    cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB),
-                    channels="RGB",
-                    use_container_width=True,  # or use_container_width=True on newer Streamlit
-                )
-            
-            # Update metrics
-            if pose_data:
-                with metrics_container.container():
-                    col1, col2, col3 = st.columns(3)
-                    with col1: 
-                        st.metric("Overall Accuracy", f"{overall_accuracy:.1f}%")
-                    with col2:
-                        avg_accuracy = np.mean(accuracy_history) if accuracy_history else 0
-                        st.metric("Average Accuracy", f"{avg_accuracy:.1f}%")
-                    with col3:
-                        status = "🟢 Excellent" if overall_accuracy >= 70 else "🟡 Good" if overall_accuracy >= 50 else "🔴 Practice"
-                        st.metric("Status", status)
-                
-                # Update feedback
-                with feedback_container.container():
-                    if joint_accuracies:
-                        worst_joint = min(joint_accuracies.keys(), key=lambda k: joint_accuracies[k])
-                        if joint_accuracies[worst_joint] < 60:
-                            st.warning(f"💡 Focus on: {worst_joint.replace('_', ' ').title()}")
-                        else:
-                            st.success("🎯 Great technique! Keep it up!")
-            
-            frame_count += 1
-            time.sleep(1.0 / frame_rate)
-    except Exception as e:
-        st.error(f"Camera error: {str(e)}")
-    finally:
-        if 'cap' in locals():
-            cap.release()
+                feedback_color = (0, 0, 255)
+                status = "Practice"
 
-def generate_realtime_feedback(joint_accuracies: Dict[str, float], reference_pose: Dict) -> str:
-    # Generate short real-time feedback message
-    if not joint_accuracies:
-        return "Move into camera view"
-    
-    worst_joint = min(joint_accuracies.keys(), key=lambda k: joint_accuracies[k])
-    worst_accuracy = joint_accuracies[worst_joint]
+            annotated_frame = self.pose_estimator.draw_pose(bgr_frame, pose_data)
+            cv2.putText(
+                annotated_frame,
+                f"Accuracy: {overall_accuracy:.1f}%  Average: {average_accuracy:.1f}%",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                feedback_color,
+                2,
+            )
+            cv2.putText(
+                annotated_frame,
+                f"Technique: {self.technique.title()}  [{status}]",
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                2,
+            )
+        else:
+            annotated_frame = bgr_frame.copy()
+            cv2.putText(
+                annotated_frame,
+                "No pose detected - move into camera view",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 0, 255),
+                2,
+            )
 
-    if worst_accuracy < 50:
-        return f"Adjust {worst_joint.replace('_', ' ')}"
-    elif worst_accuracy < 70:
-        return f"Improve {worst_joint.replace('_', ' ')}"
-    else:
-        return "Great form!"
+        return av.VideoFrame.from_ndarray(annotated_frame, format="bgr24")
+
+
+def run_realtime_analysis(technique: str, frame_rate: int):
+    rtc_configuration = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
+
+    webrtc_ctx = webrtc_streamer(
+        key=f"boxing-camera-{technique}",
+        video_processor_factory=lambda: BoxingVideoProcessor(technique),
+        rtc_configuration=rtc_configuration,
+        media_stream_constraints={
+            "video": {
+                "width": {"ideal": 640},
+                "height": {"ideal": 480},
+                "frameRate": {"ideal": frame_rate, "max": frame_rate},
+            },
+            "audio": False,
+        },
+        async_processing=True,
+    )
+
+    if webrtc_ctx and webrtc_ctx.state.playing:
+        st.success("Browser camera is streaming")
+    elif webrtc_ctx:
+        st.info("Allow camera access, then click START.")
 
 if __name__ == "__main__":
     main()
