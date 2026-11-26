@@ -661,7 +661,13 @@ class BoxingVideoProcessor(VideoProcessorBase):
 
 def run_realtime_analysis(technique: str, frame_rate: int):
     rtc_configuration = RTCConfiguration(
-        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+        {
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {"urls": ["stun:stun1.l.google.com:19302"]},
+            {"urls": ["stun:stun.cloudflare.com:3478"]}
+            ]
+        }
     )
 
     webrtc_ctx = webrtc_streamer(
@@ -670,13 +676,13 @@ def run_realtime_analysis(technique: str, frame_rate: int):
         rtc_configuration=rtc_configuration,
         media_stream_constraints={
             "video": {
-                "width": {"ideal": 640},
-                "height": {"ideal": 480},
-                "frameRate": {"ideal": frame_rate, "max": frame_rate},
+                "width": {"ideal": 480, "max": 640},
+                "height": {"ideal": 360, "max": 480},
+                "frameRate": {"ideal": 8, "max": 10},
             },
             "audio": False,
         },
-        async_processing=True,
+        async_processing=False,
     )
 
     if webrtc_ctx and webrtc_ctx.state.playing:
